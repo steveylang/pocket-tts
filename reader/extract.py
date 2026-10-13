@@ -1,6 +1,13 @@
 """Turn pasted text or a web page into clean text that is pleasant to hear."""
 
+import ipaddress
 import re
+import socket
+from collections.abc import Callable
+from typing import Any
+from urllib.parse import urljoin, urlsplit
+
+import requests
 
 
 class ExtractionError(Exception):
@@ -38,3 +45,85 @@ def clean_text(text: str) -> str:
             block += "."
         paragraphs.append(block)
     return "\n\n".join(paragraphs)
+
+
+Resolver = Callable[..., list[Any]]
+
+MAX_PAGE_BYTES = 5_000_000
+MAX_REDIRECTS = 5
+_USER_AGENT = "Mozilla/5.0 (compatible; pocket-tts-reader)"
+# Carrier-grade NAT space: this is where Tailscale addresses live. `is_private` does not cover it.
+_BLOCKED_NETWORKS = [ipaddress.ip_network("100.64.0.0/10")]
+
+
+def _is_blocked(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+        or any(address in network for network in _BLOCKED_NETWORKS)
+    )
+
+
+def check_url(url: str, resolve: Resolver = socket.getaddrinfo) -> None:
+    """Raise unless the URL is http(s) and every address its host resolves to is public.
+
+    Known limit: the host is resolved again when the request is made, so a hostile DNS server
+    could answer differently the second time (DNS rebinding). Acceptable for one user on a tailnet.
+    """
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise UnsafeURL("Only http and https links can be read.")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        infos = resolve(parts.hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as error:
+        raise ExtractionError(f"Could not find the website {parts.hostname}.") from error
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0].split("%")[0])
+        if _is_blocked(address):
+            raise UnsafeURL(
+                "That link points to a private or internal address, so it was not read."
+            )
+
+
+def fetch_page(
+    url: str,
+    http_get: Callable[..., requests.Response] = requests.get,
+    resolve: Resolver = socket.getaddrinfo,
+) -> bytes:
+    """Download a web page, checking every hop of a redirect chain and capping the size."""
+    for _ in range(MAX_REDIRECTS + 1):
+        check_url(url, resolve)
+        try:
+            response = http_get(
+                url,
+                headers={"User-Agent": _USER_AGENT},
+                timeout=(5, 15),
+                stream=True,
+                allow_redirects=False,
+            )
+        except requests.RequestException as error:
+            raise ExtractionError("Could not download that page.") from error
+        with response:
+            location = response.headers.get("Location")
+            if 300 <= response.status_code < 400 and location:
+                url = urljoin(url, location)
+                continue
+            if response.status_code >= 400:
+                raise ExtractionError(f"The website answered with error {response.status_code}.")
+            content_type = response.headers.get("Content-Type", "")
+            if content_type and "html" not in content_type.lower():
+                raise ExtractionError(f"That link is not a web page ({content_type}).")
+            body = bytearray()
+            for piece in response.iter_content(65536):
+                body.extend(piece)
+                if len(body) > MAX_PAGE_BYTES:
+                    raise ExtractionError("That page is too large to read.")
+            return bytes(body)
+    raise ExtractionError("That link redirects too many times.")
