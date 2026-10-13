@@ -4,10 +4,12 @@ import ipaddress
 import re
 import socket
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urljoin, urlsplit
 
 import requests
+import trafilatura
 
 
 class ExtractionError(Exception):
@@ -127,3 +129,32 @@ def fetch_page(
                     raise ExtractionError("That page is too large to read.")
             return bytes(body)
     raise ExtractionError("That link redirects too many times.")
+
+
+MIN_ARTICLE_CHARS = 200
+
+
+@dataclass(frozen=True)
+class Article:
+    title: str
+    text: str
+
+
+def extract_article(page: bytes) -> Article:
+    """Pull the main article out of a web page, without menus, comments, or tables."""
+    extracted = trafilatura.extract(
+        page,
+        include_comments=False,
+        include_tables=False,
+        include_links=False,
+        favor_precision=True,
+    )
+    # trafilatura puts one paragraph per line; clean_text wants blank lines between paragraphs.
+    text = clean_text((extracted or "").replace("\n", "\n\n"))
+    if len(text) < MIN_ARTICLE_CHARS:
+        raise ExtractionError(
+            "I couldn't find an article on that page. It may need JavaScript or a login."
+        )
+    metadata = trafilatura.extract_metadata(page)
+    title = (metadata.title if metadata is not None else None) or text.split("\n\n")[0]
+    return Article(title=title.strip(), text=text)
