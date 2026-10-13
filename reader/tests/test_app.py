@@ -345,7 +345,7 @@ def test_an_uploaded_clip_becomes_a_listed_voice(client: TestClient, model: Fake
     created = response.json()
     assert created["name"] == "Grandma"
     assert client.get("/voices").json()["custom"] == [created]
-    assert model.prompts == [("clip.wav", True)]
+    assert model.prompts == [("upload.wav", True)]
 
 
 def test_an_uploaded_voice_state_is_validated_and_listed(
@@ -357,7 +357,7 @@ def test_an_uploaded_voice_state_is_validated_and_listed(
     export_model_state({"fake": {"voice": torch.ones(2)}}, source)
     response = add_voice(client, "From my Mac", "mine.safetensors", source.read_bytes())
     assert response.status_code == 200
-    assert model.prompts == [("mine.safetensors", False)]
+    assert model.prompts == [("upload.safetensors", False)]
 
 
 def test_a_damaged_voice_state_is_a_400(client: TestClient):
@@ -369,7 +369,7 @@ def test_a_damaged_voice_state_is_a_400(client: TestClient):
 
 def test_the_extension_check_ignores_case(client: TestClient, model: FakeModel):
     assert add_voice(client, filename="CLIP.WAV").status_code == 200
-    assert model.prompts == [("clip.wav", True)]
+    assert model.prompts == [("upload.wav", True)]
 
 
 @pytest.mark.parametrize("filename", ["clip.m4a", "clip", "notes.txt", ""])
@@ -471,3 +471,34 @@ def test_a_voice_added_while_a_reading_generates_waits_its_turn(
     body = prepare(client).json()
     client.get(f"/chunk/{body['job']}/0.wav")
     assert add_voice(client).status_code == 200
+
+
+@pytest.fixture
+def cache_dirs(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """The cache directories the apps created in this test (must be requested before `client`)."""
+    made: list[Path] = []
+    real = reader_app.tempfile.mkdtemp
+
+    def recording(*args: object, **kwargs: object) -> str:
+        path = real(*args, **kwargs)  # ty: ignore[no-matching-overload]
+        made.append(Path(path))
+        return path
+
+    monkeypatch.setattr(reader_app.tempfile, "mkdtemp", recording)
+    return made
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["../../x.wav", "..", ".wav", "a\x00b.wav", "\u00e9" * 300 + ".wav"],
+)
+def test_hostile_voice_filenames_never_cause_a_500_or_leave_files(
+    cache_dirs: list[Path], client: TestClient, model: FakeModel, filename: str
+):
+    response = add_voice(client, filename=filename)
+    assert response.status_code in (200, 400)
+    if response.status_code == 200:
+        assert model.prompts == [("upload.wav", True)]
+    (cache_dir,) = cache_dirs
+    assert list((cache_dir / "uploads").glob("*")) == []
+    assert [p.name for p in cache_dir.parent.glob("x.wav")] == []

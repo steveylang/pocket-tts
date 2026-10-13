@@ -245,12 +245,17 @@ def create_app(model: SpeechModel | None = None, voices_dir: Path | None = None)
             raise HTTPException(status_code=400, detail=str(error)) from error
         data = _read_upload(file, MAX_VOICE_UPLOAD_BYTES)
         service: ReaderService = app.state.service
-        # A folder per upload keeps the (lower-case) original name, which the model sees and
-        # which decides audio versus voice state; the stem is capped to stay a legal file name.
+        # The client's file name is never used on disk: only its whitelisted suffix, which is what
+        # tells the model audio from a voice state.
         upload_dir = cache_dir / "uploads" / secrets.token_urlsafe(8)
-        upload = upload_dir / f"{Path(upload_name).stem[:100]}{suffix}"
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        upload.write_bytes(data)
+        upload = upload_dir / f"upload{suffix}"
+        try:
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            upload.write_bytes(data)
+        except OSError:
+            shutil.rmtree(upload_dir, ignore_errors=True)
+            logger.exception("Saving the voice upload %r failed", name)
+            raise HTTPException(status_code=500, detail="Could not add that voice.") from None
 
         def work() -> Voice:
             try:
