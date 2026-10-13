@@ -1,0 +1,12 @@
+[Unit]
+Description=Pocket TTS reader (reachable only through Tailscale Serve)
+After=network-online.target
+
+[Service]
+WorkingDirectory=/home/opc/workspace/github/pocket-tts
+ExecStart=/home/opc/.local/bin/uv run --frozen --no-dev --group reader uvicorn reader.app:create_app --factory --host 127.0.0.1 --port 8770
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
