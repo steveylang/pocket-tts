@@ -164,3 +164,9 @@ def extract_article(page: bytes) -> Article:
     metadata = trafilatura.extract_metadata(page)
     title = (metadata.title if metadata is not None else None) or text.split("\n\n")[0]
     return Article(title=title.strip(), text=text)
+
+
+def title_from(text: str) -> str:
+    """A short title for text that has none: its first paragraph, cut to 60 characters."""
+    first = text.split("\n\n")[0]
+    return first if len(first) <= 60 else first[:57].rstrip() + "..."

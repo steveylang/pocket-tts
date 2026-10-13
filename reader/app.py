@@ -25,7 +25,14 @@ from pydantic import BaseModel
 from pocket_tts import TTSModel
 from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES
 from reader.chunking import chunk_text
-from reader.extract import Article, ExtractionError, clean_text, extract_article, fetch_page
+from reader.extract import (
+    Article,
+    ExtractionError,
+    clean_text,
+    extract_article,
+    fetch_page,
+    title_from,
+)
 
 DEFAULT_VOICE = "alba"
 JOB_TTL_SECONDS = 3600
@@ -149,11 +156,6 @@ class PrepareRequest(BaseModel):
     voice: str = DEFAULT_VOICE
 
 
-def _title_from(text: str) -> str:
-    first = text.split("\n\n")[0]
-    return first if len(first) <= 60 else first[:57].rstrip() + "..."
-
-
 def _looks_like_a_link(text: str) -> bool:
     return text.startswith(("http://", "https://")) and not any(c.isspace() for c in text)
 
@@ -190,7 +192,7 @@ def create_app(model: SpeechModel | None = None) -> FastAPI:
                 article = extract_article(fetch_page(text))
             else:
                 cleaned = clean_text(text)
-                article = Article(title=_title_from(cleaned), text=cleaned)
+                article = Article(title=title_from(cleaned), text=cleaned)
             chunks = chunk_text(article.text)
             if not chunks:
                 raise ExtractionError("There is nothing readable in that text.")
