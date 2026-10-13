@@ -11,6 +11,9 @@ uv run --no-dev --group reader uvicorn reader.app:create_app --factory --host 12
 
 The first start downloads the model weights, so it can take a while.
 
+The service runs with `uv run --frozen` so the new upload dependencies (`pypdf`, `soundfile`) come
+from the updated `uv.lock` at the next service restart.
+
 ## Run the tests
 
 ```bash
@@ -48,3 +51,17 @@ an app icon.
 - The server only listens on 127.0.0.1; Tailscale Serve is the only way in.
 - One generation runs at a time. A new reading drops the not-yet-started parts of the old one.
 - Pages that need JavaScript or a login cannot be read; the page says so.
+- Documents: choose a `.txt`, `.md`, `.html` or `.pdf` (up to 20 MB). Markdown front matter is
+  skipped. Scanned PDFs have no text and are refused (there is no OCR); multi-column PDFs and
+  running headers or footers may read awkwardly.
+- Custom voices are stored in `voices/` in the repo folder (ignored by git), or in the folder named
+  by `READER_VOICES_DIR`. Add a clean 5 to 30 second `.wav`, `.mp3`, `.flac` or `.ogg` clip, or a
+  `.safetensors` made with `pocket-tts export-voice` on the Mac (use the same model version as this
+  server). iPhone Voice Memos are `.m4a`, which is not supported: convert to `.wav` first.
+- Audio clips need the voice-cloning weights, which the default model here does not have (they
+  need the terms accepted on Hugging Face and a login). Without them an audio upload returns 400
+  "This model cannot make a voice from audio. Upload a .safetensors voice." A `.safetensors` voice
+  always works. Verified against the real model: a `.safetensors` exported from the built-in alba
+  voice uploads, reads aloud and deletes cleanly. Not verified: audio uploads (no cloning
+  weights), a real Mac export, and states from a different model version.
+- At most 20 custom voices. Deleting one mid-reading makes the remaining parts of that reading fail.

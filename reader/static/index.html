@@ -26,7 +26,7 @@
     <button id="play" type="button">Play</button>
     <details id="voice-tools">
       <summary>Add or remove a voice</summary>
-      <p class="hint">A short clip of clean speech (5 to 30 seconds), or a .safetensors voice exported with <code>pocket-tts export-voice</code>.</p>
+      <p class="hint">A <code>.safetensors</code> voice (made with <code>pocket-tts export-voice</code>) always works. An audio clip (5 to 30 seconds of clean speech) works only if the server has the voice-cloning weights.</p>
       <label>Name <input id="voice-name" type="text" maxlength="40" autocomplete="off"></label>
       <label>File <input id="voice-file" type="file" accept=".wav,.mp3,.flac,.ogg,.safetensors"></label>
       <div class="row">
