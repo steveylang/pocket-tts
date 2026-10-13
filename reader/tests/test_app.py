@@ -14,6 +14,7 @@ from reader import app as reader_app
 from reader.app import ReaderService, write_wav
 from reader.extract import UnsafeURL
 from reader.tests.conftest import FakeModel
+from reader.tests.pdfs import make_pdf
 from reader.tests.samples import ARTICLE_HTML
 
 LONG_TEXT = " ".join(f"This is sentence number {i} of the test article." for i in range(60))
@@ -187,3 +188,84 @@ def test_skipping_ahead_drops_the_old_pending_parts(tmp_path: Path):
     finally:
         release.set()
         service.shutdown()
+
+
+def upload(
+    client: TestClient,
+    name: str,
+    data: bytes,
+    voice: str | None = None,
+) -> httpx.Response:
+    form = {"voice": voice} if voice else {}
+    return client.post("/prepare-file", files={"file": (name, data)}, data=form)
+
+
+def test_a_text_file_is_prepared_and_read(client: TestClient, model: FakeModel):
+    response = upload(client, "notes.txt", LONG_TEXT.encode())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["chunks"] > 1
+    assert body["title"].startswith("This is sentence number 0")
+    client.get(f"/chunk/{body['job']}/0.wav")
+    assert "sentence number 0" in model.texts[0]
+
+
+def test_a_pdf_is_prepared(client: TestClient):
+    response = upload(client, "paper.pdf", make_pdf([LONG_TEXT[:400]]))
+    assert response.status_code == 200
+    assert response.json()["chunks"] >= 1
+
+
+def test_an_html_file_is_read_as_an_article(client: TestClient):
+    body = upload(client, "post.html", ARTICLE_HTML).json()
+    assert body["title"] == "Notes on Growing Tomatoes"
+
+
+def test_the_chosen_voice_is_used_for_a_file(client: TestClient, model: FakeModel):
+    body = upload(client, "n.txt", LONG_TEXT.encode(), voice="marius").json()
+    client.get(f"/chunk/{body['job']}/0.wav")
+    assert model.voices[0] == "marius"
+
+
+def test_a_file_upload_defaults_to_the_default_voice(client: TestClient, model: FakeModel):
+    body = upload(client, "n.txt", LONG_TEXT.encode()).json()
+    client.get(f"/chunk/{body['job']}/0.wav")
+    assert model.voices[0] == "alba"
+
+
+def test_an_unknown_voice_is_rejected_for_a_file(client: TestClient):
+    response = upload(client, "n.txt", b"Hello there.", voice="nobody")
+    assert response.status_code == 400
+    assert "Unknown voice" in response.json()["detail"]
+
+
+def test_an_unsupported_file_type_is_a_400(client: TestClient):
+    response = upload(client, "song.mp3", b"data")
+    assert response.status_code == 400
+    assert ".txt, .md, .html or .pdf" in response.json()["detail"]
+
+
+def test_an_empty_file_is_a_400_not_a_crash(client: TestClient):
+    response = upload(client, "empty.txt", b"")
+    assert response.status_code == 400
+    assert "nothing readable" in response.json()["detail"].lower()
+
+
+def test_a_file_over_the_size_cap_is_refused(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(reader_app, "MAX_DOCUMENT_BYTES", 10)
+    response = upload(client, "n.txt", b"x" * 11)
+    assert response.status_code == 400
+    assert "larger than" in response.json()["detail"]
+
+
+def test_a_file_exactly_at_the_cap_is_accepted(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(reader_app, "MAX_DOCUMENT_BYTES", 13)
+    assert upload(client, "n.txt", b"Hello, world.").status_code == 200
+
+
+def test_a_request_without_a_file_is_a_422(client: TestClient):
+    assert client.post("/prepare-file", data={"voice": "alba"}).status_code == 422

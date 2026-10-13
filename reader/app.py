@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 import wave
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import asynccontextmanager
@@ -17,7 +17,7 @@ from typing import Protocol
 
 import numpy as np
 import torch
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from pocket_tts import TTSModel
 from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES
 from reader.chunking import chunk_text
+from reader.documents import MAX_DOCUMENT_BYTES, extract_document
 from reader.extract import (
     Article,
     ExtractionError,
@@ -160,6 +161,16 @@ def _looks_like_a_link(text: str) -> bool:
     return text.startswith(("http://", "https://")) and not any(c.isspace() for c in text)
 
 
+def _read_upload(file: UploadFile, limit: int) -> bytes:
+    """Read an uploaded file, refusing anything over `limit` bytes."""
+    data = file.file.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(
+            status_code=400, detail=f"That file is larger than {limit // 1_000_000} MB."
+        )
+    return data
+
+
 def create_app(model: SpeechModel | None = None) -> FastAPI:
     """App factory. Run with: uvicorn reader.app:create_app --factory"""
     cache_dir = Path(tempfile.mkdtemp(prefix="pocket-tts-reader-"))
@@ -182,24 +193,42 @@ def create_app(model: SpeechModel | None = None) -> FastAPI:
     def voices() -> dict[str, object]:
         return {"voices": list(_ORIGINS_OF_PREDEFINED_VOICES), "default": DEFAULT_VOICE}
 
-    @app.post("/prepare")
-    def prepare(request: PrepareRequest) -> dict[str, object]:
-        if request.voice not in _ORIGINS_OF_PREDEFINED_VOICES:
-            raise HTTPException(status_code=400, detail=f"Unknown voice: {request.voice}")
-        text = request.input.strip()
+    def resolve_voice(voice: str) -> str:
+        if voice not in _ORIGINS_OF_PREDEFINED_VOICES:
+            raise HTTPException(status_code=400, detail=f"Unknown voice: {voice}")
+        return voice
+
+    def start_reading(make_article: Callable[[], Article], voice: str) -> dict[str, object]:
+        """Shared by every way of starting a reading: check the voice, extract, chunk, queue."""
+        resolved = resolve_voice(voice)
         try:
-            if _looks_like_a_link(text):
-                article = extract_article(fetch_page(text))
-            else:
-                cleaned = clean_text(text)
-                article = Article(title=title_from(cleaned), text=cleaned)
+            article = make_article()
             chunks = chunk_text(article.text)
             if not chunks:
                 raise ExtractionError("There is nothing readable in that text.")
         except ExtractionError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
-        job_id = app.state.service.add_job(article.title, request.voice, chunks)
+        job_id = app.state.service.add_job(article.title, resolved, chunks)
         return {"job": job_id, "title": article.title, "chunks": len(chunks)}
+
+    def article_from_input(text: str) -> Article:
+        if _looks_like_a_link(text):
+            return extract_article(fetch_page(text))
+        cleaned = clean_text(text)
+        return Article(title=title_from(cleaned), text=cleaned)
+
+    @app.post("/prepare")
+    def prepare(request: PrepareRequest) -> dict[str, object]:
+        return start_reading(lambda: article_from_input(request.input.strip()), request.voice)
+
+    @app.post("/prepare-file")
+    def prepare_file(
+        file: UploadFile = File(...), voice: str = Form(DEFAULT_VOICE)
+    ) -> dict[str, object]:
+        def article() -> Article:
+            return extract_document(file.filename or "", _read_upload(file, MAX_DOCUMENT_BYTES))
+
+        return start_reading(article, voice)
 
     @app.get("/chunk/{job_id}/{n:int}.wav")
     def chunk(job_id: str, n: int) -> FileResponse:
