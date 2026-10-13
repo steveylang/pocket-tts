@@ -1,3 +1,4 @@
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import torch
 from pocket_tts.models.model_state import _import_model_state, export_model_state
 from reader import voices as voices_module
 from reader.tests.conftest import FakeModel
-from reader.voices import VoiceError, VoiceStore, encode_voice
+from reader.voices import VoiceError, VoiceStore, convert_mimika_state, encode_voice
 
 
 def write_bytes(content: bytes) -> Callable[[Path], None]:
@@ -197,3 +198,100 @@ def test_an_empty_voice_state_is_refused(tmp_path: Path):
     with pytest.raises(VoiceError, match="not a voice this reader can use"):
         encode_voice(FakeModel(), source, tmp_path / "out.part")
     assert not (tmp_path / "out.part").exists()
+
+
+T_VOICE = 5
+
+
+def write_mimika_state(
+    path: Path, t_voice: int = T_VOICE, max_seq: int = 8, layers: int = 6, info: dict | None = None
+) -> dict[str, torch.Tensor]:
+    """A voice file in the layout Mimika writes: padded fp16 K and V per layer."""
+    from safetensors.torch import save_file
+
+    tensors: dict[str, torch.Tensor] = {}
+    for i in range(layers):
+        tensors[f"kv_k_{i}"] = torch.randn(1, max_seq, 16, 64).half()
+        tensors[f"kv_v_{i}"] = torch.randn(1, max_seq, 16, 64).half()
+    if info is None:
+        info = {"T_voice": t_voice, "max_seq": max_seq, "n_layers": layers}
+    save_file(tensors, path, metadata={"info": json.dumps(info)})
+    return tensors
+
+
+def test_a_mimika_voice_is_converted_to_the_readers_layout(tmp_path: Path):
+    source = tmp_path / "mimika.safetensors"
+    original = write_mimika_state(source)
+    dest = tmp_path / "out.safetensors"
+    convert_mimika_state(source, dest)
+    state = _import_model_state(dest, torch.device("cpu"))
+    assert len(state) == 6
+    for i in range(6):
+        layer = state[f"transformer.layers.{i}.self_attn"]
+        k = original[f"kv_k_{i}"][:, :T_VOICE]
+        v = original[f"kv_v_{i}"][:, :T_VOICE]
+        assert layer["cache"].dtype == torch.float32
+        assert layer["cache"].shape == (2, 1, T_VOICE, 16, 64)
+        assert torch.equal(layer["cache"][0], k.float())
+        assert torch.equal(layer["cache"][1], v.float())
+        assert layer["offset"].tolist() == [T_VOICE]
+        assert layer["pad"].tolist() == [0]
+
+
+def test_a_mimika_voice_keeps_only_its_valid_positions(tmp_path: Path):
+    source = tmp_path / "mimika.safetensors"
+    write_mimika_state(source, t_voice=3, max_seq=8)
+    dest = tmp_path / "out.safetensors"
+    convert_mimika_state(source, dest)
+    layer = _import_model_state(dest, torch.device("cpu"))["transformer.layers.0.self_attn"]
+    assert layer["cache"].shape[2] == 3
+
+
+def test_an_uploaded_mimika_voice_is_converted_validated_and_stored(tmp_path: Path):
+    model = FakeModel()
+    source = tmp_path / "upload.safetensors"
+    write_mimika_state(source)
+    dest = tmp_path / "out.part"
+    encode_voice(model, source, dest)
+    # The model validated the converted file, not the original.
+    assert model.prompts == [("converted.safetensors", False)]
+    assert "transformer.layers.0.self_attn" in _import_model_state(dest, torch.device("cpu"))
+    assert not (tmp_path / "converted.safetensors").exists()
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        {"max_seq": 8},
+        {"T_voice": 0},
+        {"T_voice": 9},
+        {"T_voice": "many"},
+    ],
+)
+def test_a_mimika_voice_with_bad_metadata_is_refused(tmp_path: Path, info: dict):
+    source = tmp_path / "upload.safetensors"
+    write_mimika_state(source, info=info)
+    with pytest.raises(VoiceError, match="Mimika"):
+        encode_voice(FakeModel(), source, tmp_path / "out.part")
+    assert not (tmp_path / "out.part").exists()
+
+
+def test_a_mimika_voice_missing_a_layer_is_refused(tmp_path: Path):
+    from safetensors.torch import load_file, save_file
+
+    source = tmp_path / "upload.safetensors"
+    write_mimika_state(source)
+    tensors = load_file(source)
+    del tensors["kv_v_3"]
+    save_file(tensors, source, metadata={"info": json.dumps({"T_voice": T_VOICE})})
+    with pytest.raises(VoiceError, match="Mimika"):
+        encode_voice(FakeModel(), source, tmp_path / "out.part")
+
+
+def test_the_refusal_for_other_files_no_longer_blames_the_model_version(tmp_path: Path):
+    source = tmp_path / "bad.safetensors"
+    source.write_bytes(b"nope")
+    with pytest.raises(VoiceError) as raised:
+        encode_voice(FakeModel(), source, tmp_path / "out.part")
+    assert "pocket-tts export-voice" in str(raised.value)
+    assert "Mimika" in str(raised.value)

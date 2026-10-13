@@ -65,3 +65,9 @@ an app icon.
   voice uploads, reads aloud and deletes cleanly. Not verified: audio uploads (no cloning
   weights), a real Mac export, and states from a different model version.
 - At most 20 custom voices. Deleting one mid-reading makes the remaining parts of that reading fail.
+- Voice files from the Mimika Mac app (`<UUID>_kv.safetensors`) are converted on upload to this
+  model's layout. They only sound right with the model they were made for, the original
+  `english_2026-01`. Verified with a real Mimika file: on `english_2026-01` it reads normally; on
+  `english_2026-04` and the current default `english_2026-09_2` the model never reaches the end of
+  speech and the audio is near silent. A voice state from any model version other than the one
+  the server runs is accepted at upload and only fails when it is used.
