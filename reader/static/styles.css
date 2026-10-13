@@ -1,0 +1,61 @@
+:root {
+  --bg: #f9fafb;
+  --fg: #111827;
+  --muted: #6b7280;
+  --card: #ffffff;
+  --border: #d1d5db;
+  --accent: #2563eb;
+  --accent-fg: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111827;
+    --fg: #f9fafb;
+    --muted: #9ca3af;
+    --card: #1f2937;
+    --border: #374151;
+    --accent: #3b82f6;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 -apple-system, system-ui, sans-serif;
+}
+
+main {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 16px max(16px, env(safe-area-inset-right)) 32px max(16px, env(safe-area-inset-left));
+}
+
+h1 { font-size: 1.4rem; margin: 8px 0 16px; }
+h2 { font-size: 1.1rem; margin: 0 0 4px; }
+
+/* 16px minimum stops iOS Safari from zooming into the field. */
+textarea, select, button {
+  font: inherit;
+  color: inherit;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+textarea { width: 100%; padding: 12px; resize: vertical; }
+select { padding: 8px; max-width: 100%; }
+
+.row { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; margin: 12px 0; }
+label { display: flex; align-items: center; gap: 8px; }
+
+button { padding: 12px 20px; min-height: 44px; }
+#play { width: 100%; background: var(--accent); color: var(--accent-fg); border: 0; font-weight: 600; }
+
+#status { color: var(--muted); min-height: 1.5em; }
+#player { margin-top: 16px; padding: 16px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; }
+#progress { margin: 0 0 12px; color: var(--muted); }
+audio { width: 100%; }
