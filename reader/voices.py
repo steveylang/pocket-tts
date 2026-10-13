@@ -1,6 +1,7 @@
 """Custom voices: uploaded audio or exported voice states, kept on disk across restarts."""
 
 import json
+import logging
 import re
 import secrets
 import shutil
@@ -14,6 +15,8 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 from pocket_tts.models.model_state import export_model_state
+
+logger = logging.getLogger(__name__)
 
 MAX_VOICES = 20
 MAX_NAME_CHARS = 40
@@ -196,4 +199,6 @@ def encode_voice(model: VoiceEncoder, upload: Path, dest: Path) -> None:
         state = model.get_state_for_audio_prompt(upload, truncate=True)
         export_model_state(state, dest)
     except Exception as error:
+        # The page only says it could not be read; the reason is for whoever reads the log.
+        logger.warning("Could not read the audio upload %s", upload.name, exc_info=True)
         raise VoiceError("Could not read that audio file.") from error
