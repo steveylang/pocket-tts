@@ -17,3 +17,14 @@ def test_script_and_styles_are_served(client: TestClient):
 
 def test_the_page_has_a_retry_button_for_failed_parts(client: TestClient):
     assert 'id="retry"' in client.get("/").text
+
+
+def test_the_page_has_a_document_picker_for_the_supported_types(client: TestClient):
+    page = client.get("/").text
+    assert 'id="file"' in page
+    for extension in (".txt", ".md", ".html", ".pdf"):
+        assert extension in page
+
+
+def test_the_script_sends_a_chosen_file_to_prepare_file(client: TestClient):
+    assert "/prepare-file" in client.get("/static/app.js").text

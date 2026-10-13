@@ -59,3 +59,8 @@ button { padding: 12px 20px; min-height: 44px; }
 #player { margin-top: 16px; padding: 16px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; }
 #progress { margin: 0 0 12px; color: var(--muted); }
 audio { width: 100%; }
+
+/* 16px minimum, as for select, so iOS Safari does not zoom. */
+input[type="text"], input[type="file"] { font: inherit; color: inherit; max-width: 100%; }
+input[type="text"] { padding: 8px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; }
+label.file { margin: 12px 0 0; flex-wrap: wrap; }

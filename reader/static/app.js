@@ -22,6 +22,12 @@ function setStatus(text) {
   $("status").textContent = text;
 }
 
+// FastAPI sends `detail` as a list for malformed requests; only a string is fit to show.
+function errorText(body, response) {
+  if (typeof body.detail === "string") return body.detail;
+  return response.statusText || "Something went wrong.";
+}
+
 // iOS only lets a page start audio from a tap, and the tap's permission is gone by the time the
 // server has answered. Playing 0.1 s of silence inside the tap "unlocks" this audio element, so
 // the real chunks can start later without another tap.
@@ -75,10 +81,18 @@ function setupMediaSession() {
   navigator.mediaSession.setActionHandler("nexttrack", () => playChunk(index + 1));
 }
 
+function fileForm(file) {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("voice", $("voice").value);
+  return form;
+}
+
 async function start() {
+  const file = $("file").files[0];
   const input = $("input").value.trim();
-  if (!input) {
-    setStatus("Paste some text or a link first.");
+  if (!file && !input) {
+    setStatus("Paste some text or a link, or choose a document first.");
     return;
   }
   preparing = true;
@@ -92,15 +106,17 @@ async function start() {
   setStatus("Preparing…");
   $("play").disabled = true;
   try {
-    const response = await fetch("/prepare", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input, voice: $("voice").value }),
-    });
+    const response = file
+      ? await fetch("/prepare-file", { method: "POST", body: fileForm(file) })
+      : await fetch("/prepare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ input, voice: $("voice").value }),
+        });
     // An unexpected server error may not be JSON; show its status text instead of a wrong message.
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      setStatus(body.detail || response.statusText || "Something went wrong.");
+      setStatus(errorText(body, response));
       return;
     }
     job = { id: body.job, title: body.title, chunks: body.chunks };
@@ -130,6 +146,11 @@ async function loadVoices() {
 }
 
 $("play").addEventListener("click", start);
+// A document and pasted text are alternatives: choosing one clears the other.
+$("file").addEventListener("change", () => {
+  if ($("file").files[0]) $("input").value = "";
+});
+$("input").addEventListener("input", () => { $("file").value = ""; });
 $("prev").addEventListener("click", () => playChunk(index - 1));
 $("next").addEventListener("click", () => playChunk(index + 1));
 $("voice").addEventListener("change", () => safeSet("voice", $("voice").value));
