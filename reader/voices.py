@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+import torch
+
 from pocket_tts.models.model_state import export_model_state
 
 MAX_VOICES = 20
@@ -107,7 +109,7 @@ class VoiceEncoder(Protocol):
 
     def get_state_for_audio_prompt(
         self, audio_conditioning: Path, truncate: bool = False
-    ) -> object: ...
+    ) -> dict[str, dict[str, torch.Tensor]]: ...
 
 
 def encode_voice(model: VoiceEncoder, upload: Path, dest: Path) -> None:
@@ -133,6 +135,6 @@ def encode_voice(model: VoiceEncoder, upload: Path, dest: Path) -> None:
     try:
         # Only the first 30 seconds are used, as `pocket-tts export-voice` does.
         state = model.get_state_for_audio_prompt(upload, truncate=True)
-        export_model_state(state, dest)  # ty: ignore[invalid-argument-type]
+        export_model_state(state, dest)
     except Exception as error:
         raise VoiceError("Could not read that audio file.") from error

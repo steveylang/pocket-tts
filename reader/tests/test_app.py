@@ -173,7 +173,7 @@ def test_skipping_ahead_drops_the_old_pending_parts(tmp_path: Path):
 
     class BlockingModel(FakeModel):
         def generate_audio(
-            self, model_state: dict[str, str], text_to_generate: str
+            self, model_state: object, text_to_generate: str
         ) -> torch.Tensor:
             release.wait(5)
             return super().generate_audio(model_state, text_to_generate)

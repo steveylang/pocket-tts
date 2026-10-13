@@ -21,9 +21,11 @@ class FakeModel:
         self.prompts: list[tuple[str, bool]] = []
         self.fail_next = False
 
-    def _cached_get_state_for_audio_prompt(self, voice: str | Path) -> dict[str, str | Path]:
-        self.voices.append(voice)
-        return {"voice": voice}
+    def _cached_get_state_for_audio_prompt(
+        self, audio_conditioning: str | Path
+    ) -> dict[str, str | Path]:
+        self.voices.append(audio_conditioning)
+        return {"voice": audio_conditioning}
 
     def get_state_for_audio_prompt(
         self, audio_conditioning: Path, truncate: bool = False
@@ -34,7 +36,7 @@ class FakeModel:
             return _import_model_state(audio_conditioning, torch.device("cpu"))
         return {"fake": {"voice": torch.zeros(1)}}
 
-    def generate_audio(self, model_state: dict[str, str | Path], text_to_generate: str) -> torch.Tensor:
+    def generate_audio(self, model_state: object, text_to_generate: str) -> torch.Tensor:
         if self.fail_next:
             self.fail_next = False
             raise RuntimeError("boom")

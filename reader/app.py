@@ -14,7 +14,7 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 import numpy as np
 import torch
@@ -60,13 +60,15 @@ class SpeechModel(Protocol):
     @property
     def sample_rate(self) -> int: ...
 
-    def _cached_get_state_for_audio_prompt(self, voice: str | Path) -> object: ...
+    def _cached_get_state_for_audio_prompt(self, audio_conditioning: str | Path) -> Any: ...  # noqa: ANN401
 
     def get_state_for_audio_prompt(
         self, audio_conditioning: Path, truncate: bool = False
-    ) -> object: ...
+    ) -> dict[str, dict[str, torch.Tensor]]: ...
 
-    def generate_audio(self, model_state: object, text_to_generate: str) -> torch.Tensor: ...
+    def generate_audio(
+        self, model_state: dict[str, dict[str, torch.Tensor]], text_to_generate: str
+    ) -> torch.Tensor: ...
 
 
 def write_wav(path: Path, audio: torch.Tensor, sample_rate: int) -> None:
