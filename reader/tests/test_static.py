@@ -13,3 +13,7 @@ def test_script_and_styles_are_served(client: TestClient):
     assert script.status_code == 200
     assert "mediaSession" in script.text
     assert client.get("/static/styles.css").status_code == 200
+
+
+def test_the_page_has_a_retry_button_for_failed_parts(client: TestClient):
+    assert 'id="retry"' in client.get("/").text

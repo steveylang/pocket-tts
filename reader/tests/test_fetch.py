@@ -150,3 +150,9 @@ def test_network_failures_are_reported():
 
     with pytest.raises(ExtractionError, match="download"):
         fetch_page("https://example.com/", failing, resolve)
+
+
+@pytest.mark.parametrize("url", ["http://example.com:99999/", "http://a..b/", "http://[::1/"])
+def test_malformed_urls_are_a_clear_error_not_a_crash(url: str):
+    with pytest.raises(ExtractionError, match="not valid"):
+        check_url(url)

@@ -5,6 +5,10 @@ const audio = $("audio");
 
 let job = null; // { id, title, chunks }
 let index = 0;
+// True from the tap on Play until the new reading is ready. While set, the unlock clip and the
+// previous reading must not trigger "next part" or error handling.
+let preparing = false;
+let silentUrl = null;
 
 function safeGet(key) {
   try { return localStorage.getItem(key); } catch { return null; }
@@ -53,13 +57,13 @@ function playChunk(n) {
   if (!job || n < 0 || n >= job.chunks) return;
   index = n;
   audio.src = chunkUrl(n);
+  $("retry").hidden = true;
   applySpeed();
   $("progress").textContent = `Part ${n + 1} of ${job.chunks}`;
   setStatus("");
+  // The server generates the next part ahead by itself; asking for it here too would queue work
+  // two parts ahead and slow down skipping.
   audio.play().catch(() => setStatus("Tap play to continue."));
-  // The server already generates the next part ahead; fetching it here also warms the browser
-  // cache so the switch between parts is instant.
-  if (n + 1 < job.chunks) fetch(chunkUrl(n + 1)).catch(() => {});
 }
 
 function setupMediaSession() {
@@ -77,7 +81,13 @@ async function start() {
     setStatus("Paste some text or a link first.");
     return;
   }
-  audio.src = silentWavUrl();
+  preparing = true;
+  job = null;
+  index = 0;
+  $("player").hidden = true;
+  $("retry").hidden = true;
+  silentUrl = silentUrl || silentWavUrl();
+  audio.src = silentUrl;
   audio.play().catch(() => {});
   setStatus("Preparing…");
   $("play").disabled = true;
@@ -87,9 +97,10 @@ async function start() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ input, voice: $("voice").value }),
     });
-    const body = await response.json();
+    // An unexpected server error may not be JSON; show its status text instead of a wrong message.
+    const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      setStatus(body.detail || "Something went wrong.");
+      setStatus(body.detail || response.statusText || "Something went wrong.");
       return;
     }
     job = { id: body.job, title: body.title, chunks: body.chunks };
@@ -101,6 +112,7 @@ async function start() {
   } catch {
     setStatus("Could not reach the server.");
   } finally {
+    preparing = false;
     $("play").disabled = false;
   }
 }
@@ -123,13 +135,17 @@ $("next").addEventListener("click", () => playChunk(index + 1));
 $("voice").addEventListener("change", () => safeSet("voice", $("voice").value));
 $("speed").addEventListener("input", applySpeed);
 audio.addEventListener("ended", () => {
-  if (job && index + 1 < job.chunks) playChunk(index + 1);
+  if (preparing || !job) return;
+  if (index + 1 < job.chunks) playChunk(index + 1);
   else setStatus("Finished.");
 });
 audio.addEventListener("loadedmetadata", applySpeed);
 audio.addEventListener("error", () => {
-  if (job) setStatus("Could not load this part. Tap Next or Play to retry.");
+  if (preparing || !job) return;
+  setStatus("Could not load this part.");
+  $("retry").hidden = false;
 });
+$("retry").addEventListener("click", () => playChunk(index));
 
 const savedSpeed = parseFloat(safeGet("speed"));
 if (savedSpeed >= 0.75 && savedSpeed <= 2) $("speed").value = String(savedSpeed);

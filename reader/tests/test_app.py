@@ -1,4 +1,5 @@
 import io
+import threading
 import time
 import wave
 from collections.abc import Callable
@@ -10,7 +11,7 @@ import torch
 from fastapi.testclient import TestClient
 
 from reader import app as reader_app
-from reader.app import write_wav
+from reader.app import ReaderService, write_wav
 from reader.extract import UnsafeURL
 from reader.tests.conftest import FakeModel
 from reader.tests.samples import ARTICLE_HTML
@@ -156,3 +157,33 @@ def test_write_wav_roundtrip(tmp_path: Path):
         frames = wav.readframes(4)
     samples = [int.from_bytes(frames[i : i + 2], "little", signed=True) for i in range(0, 8, 2)]
     assert samples == [0, 16383, -16383, 32767]  # 2.0 is clipped to full scale
+
+
+def test_a_malformed_link_is_a_400_not_a_crash(client: TestClient):
+    response = prepare(client, "http://example.com:99999/")
+    assert response.status_code == 400
+    assert "not valid" in response.json()["detail"]
+
+
+def test_skipping_ahead_drops_the_old_pending_parts(tmp_path: Path):
+    release = threading.Event()
+
+    class BlockingModel(FakeModel):
+        def generate_audio(
+            self, model_state: dict[str, str], text_to_generate: str
+        ) -> torch.Tensor:
+            release.wait(5)
+            return super().generate_audio(model_state, text_to_generate)
+
+    service = ReaderService(BlockingModel(), tmp_path)
+    try:
+        job_id = service.add_job("t", "alba", [f"Part {i}." for i in range(10)])
+        service.chunk_future(job_id, 0)
+        futures = service.jobs[job_id].futures
+        wait_until(lambda: futures[0].running())
+        service.chunk_future(job_id, 5)
+        # Part 0 is already running and cannot stop; the never-started part 1 must be dropped.
+        assert set(futures) == {0, 5, 6}
+    finally:
+        release.set()
+        service.shutdown()

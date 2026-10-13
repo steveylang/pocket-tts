@@ -99,6 +99,11 @@ class ReaderService:
             job = self.jobs.get(job_id)
             if job is None or not 0 <= n < len(job.chunks):
                 raise KeyError((job_id, n))
+            # Parts queued earlier but not started (the listener skipped past them) would delay
+            # this one for nothing, so drop them.
+            for other_n, other in list(job.futures.items()):
+                if other_n not in (n, n + 1) and other.cancel():
+                    del job.futures[other_n]
             future = self._submit(job_id, job, n)
             if n + 1 < len(job.chunks):
                 self._submit(job_id, job, n + 1)

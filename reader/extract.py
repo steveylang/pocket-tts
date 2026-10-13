@@ -78,14 +78,20 @@ def check_url(url: str, resolve: Resolver = socket.getaddrinfo) -> None:
     Known limit: the host is resolved again when the request is made, so a hostile DNS server
     could answer differently the second time (DNS rebinding). Acceptable for one user on a tailnet.
     """
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError as error:
+        raise ExtractionError("That link is not valid.") from error
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise UnsafeURL("Only http and https links can be read.")
-    port = parts.port or (443 if parts.scheme == "https" else 80)
+    port = port or (443 if parts.scheme == "https" else 80)
     try:
         infos = resolve(parts.hostname, port, type=socket.SOCK_STREAM)
     except socket.gaierror as error:
         raise ExtractionError(f"Could not find the website {parts.hostname}.") from error
+    except UnicodeError as error:
+        raise ExtractionError("That link is not valid.") from error
     for info in infos:
         address = ipaddress.ip_address(info[4][0].split("%")[0])
         if _is_blocked(address):
