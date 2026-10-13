@@ -187,3 +187,13 @@ def test_a_model_without_voice_cloning_still_accepts_voice_states(tmp_path: Path
     source = a_voice_state_file(tmp_path / "mine.safetensors")
     encode_voice(model, source, tmp_path / "out2.part")
     assert (tmp_path / "out2.part").exists()
+
+
+def test_an_empty_voice_state_is_refused(tmp_path: Path):
+    from safetensors.torch import save_file
+
+    source = tmp_path / "empty.safetensors"
+    save_file({}, str(source))
+    with pytest.raises(VoiceError, match="not a voice this reader can use"):
+        encode_voice(FakeModel(), source, tmp_path / "out.part")
+    assert not (tmp_path / "out.part").exists()

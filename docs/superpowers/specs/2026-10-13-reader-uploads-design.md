@@ -83,10 +83,10 @@ makes later chunks fail with the existing "Could not generate that part" 500; ac
 ## Page changes
 
 - A "Choose file" button next to the text box, accepting `.txt,.md,.html,.htm,.pdf`. After picking,
-  the file name shows in place of the paste box content and Play sends it to `/prepare-file`.
+  choosing a file clears the paste box, the browser's file control shows the name, and Play sends it to `/prepare-file`.
   Choosing a file clears pasted text and vice versa.
 - Voice dropdown gets an "Uploaded" group listing custom voices.
-- An "Add voice" section: file input (`audio/*,.safetensors`), name field, Add button. Status line
+- An "Add voice" section: file input with NO `accept` filter (so iOS does not grey out `.safetensors`; the server validates the type), name field, Add button. Status line
   shows "Preparing voice..." then "Added <name>".
 - A "Delete voice" button, enabled only when a custom voice is selected, with a confirm prompt.
 - Last-used voice persists in localStorage as today; a stale custom id falls back to the default.

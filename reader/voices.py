@@ -122,7 +122,9 @@ def encode_voice(model: VoiceEncoder, upload: Path, dest: Path) -> None:
         try:
             # Loading is the validation. A state from a different model can still load; that
             # shows up as an error when the voice is first used.
-            model.get_state_for_audio_prompt(upload)
+            state = model.get_state_for_audio_prompt(upload)
+            if not state:
+                raise ValueError("empty voice state")
         except Exception as error:
             raise VoiceError(
                 "That file is not a voice this reader can use "

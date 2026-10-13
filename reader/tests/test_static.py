@@ -1,3 +1,5 @@
+import re
+
 from fastapi.testclient import TestClient
 
 
@@ -36,6 +38,9 @@ def test_the_page_has_a_panel_to_add_and_delete_voices(client: TestClient):
         assert f'id="{element_id}"' in page
     for extension in (".wav", ".mp3", ".flac", ".ogg", ".safetensors"):
         assert extension in page
+    # iOS can grey out extensions it cannot map to a type, so the voice picker has no filter.
+    voice_input = re.search(r'<input[^>]*id="voice-file"[^>]*>', page)
+    assert voice_input and "accept" not in voice_input.group(0)
 
 
 def test_the_script_talks_to_the_voice_endpoints(client: TestClient):
