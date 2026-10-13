@@ -48,6 +48,6 @@ def model() -> FakeModel:
 
 
 @pytest.fixture
-def client(model: FakeModel) -> Iterator[TestClient]:
-    with TestClient(create_app(model)) as test_client:
+def client(model: FakeModel, tmp_path: Path) -> Iterator[TestClient]:
+    with TestClient(create_app(model, voices_dir=tmp_path / "voices")) as test_client:
         yield test_client

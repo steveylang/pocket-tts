@@ -1,6 +1,7 @@
 """Phone-friendly reader: paste text or a link, hear it read aloud one chunk at a time."""
 
 import logging
+import os
 import secrets
 import shutil
 import tempfile
@@ -17,8 +18,10 @@ from typing import Protocol, TypeVar
 
 import numpy as np
 import torch
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -34,11 +37,14 @@ from reader.extract import (
     fetch_page,
     title_from,
 )
+from reader.voices import UPLOAD_SUFFIXES, Voice, VoiceError, VoiceStore, encode_voice
 
 DEFAULT_VOICE = "alba"
 JOB_TTL_SECONDS = 3600
 # How long a chunk request waits for the (single) generator before saying "busy".
 CHUNK_WAIT_SECONDS = 120
+MAX_VOICE_UPLOAD_BYTES = 25_000_000
+VOICE_TYPE_MESSAGE = "That file type can't be used. Use .wav, .mp3, .flac, .ogg or .safetensors."
 STATIC_DIR = Path(__file__).parent / "static"
 
 logger = logging.getLogger(__name__)
@@ -189,9 +195,11 @@ def _read_upload(file: UploadFile, limit: int) -> bytes:
     return data
 
 
-def create_app(model: SpeechModel | None = None) -> FastAPI:
+def create_app(model: SpeechModel | None = None, voices_dir: Path | None = None) -> FastAPI:
     """App factory. Run with: uvicorn reader.app:create_app --factory"""
     cache_dir = Path(tempfile.mkdtemp(prefix="pocket-tts-reader-"))
+    # Relative to the service's working directory (the repo) unless READER_VOICES_DIR says otherwise.
+    store = VoiceStore(voices_dir or Path(os.environ.get("READER_VOICES_DIR") or "voices"))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -209,12 +217,75 @@ def create_app(model: SpeechModel | None = None) -> FastAPI:
 
     @app.get("/voices")
     def voices() -> dict[str, object]:
-        return {"voices": list(_ORIGINS_OF_PREDEFINED_VOICES), "default": DEFAULT_VOICE}
+        return {
+            "voices": list(_ORIGINS_OF_PREDEFINED_VOICES),
+            "custom": [{"id": voice.id, "name": voice.name} for voice in store.list_voices()],
+            "default": DEFAULT_VOICE,
+        }
 
-    def resolve_voice(voice: str) -> str:
-        if voice not in _ORIGINS_OF_PREDEFINED_VOICES:
+    @app.exception_handler(RequestValidationError)
+    async def bad_request(request: Request, error: RequestValidationError) -> JSONResponse:
+        # A voice upload with no usable file (browsers send a nameless part as plain text) is the
+        # same "can't be used" 400 as a wrong type; every other validation failure stays a 422.
+        is_voice_upload = request.method == "POST" and request.url.path == "/voices"
+        if is_voice_upload and any(tuple(e["loc"]) == ("body", "file") for e in error.errors()):
+            return JSONResponse(status_code=400, content={"detail": VOICE_TYPE_MESSAGE})
+        return await request_validation_exception_handler(request, error)
+
+    @app.post("/voices")
+    def add_voice(file: UploadFile | None = File(None), name: str = Form(...)) -> dict[str, str]:
+        # A missing file (or one with no filename) gets the same 400 via the handler below.
+        upload_name = Path(file.filename or "").name.lower() if file else ""
+        suffix = Path(upload_name).suffix
+        if file is None or suffix not in UPLOAD_SUFFIXES:
+            raise HTTPException(status_code=400, detail=VOICE_TYPE_MESSAGE)
+        try:
+            name = store.prepare_name(name)  # fail on a bad name before reading the upload
+        except VoiceError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        data = _read_upload(file, MAX_VOICE_UPLOAD_BYTES)
+        service: ReaderService = app.state.service
+        # A folder per upload keeps the (lower-case) original name, which the model sees and
+        # which decides audio versus voice state; the stem is capped to stay a legal file name.
+        upload_dir = cache_dir / "uploads" / secrets.token_urlsafe(8)
+        upload = upload_dir / f"{Path(upload_name).stem[:100]}{suffix}"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        upload.write_bytes(data)
+
+        def work() -> Voice:
+            try:
+                return store.add(name, lambda dest: encode_voice(service.model, upload, dest))
+            finally:
+                shutil.rmtree(upload_dir, ignore_errors=True)
+
+        try:
+            voice = service.run_on_worker(work).result(timeout=CHUNK_WAIT_SECONDS)
+        except VoiceError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except FutureTimeout:
+            raise HTTPException(
+                status_code=503,
+                detail="The reader is busy. The voice may still appear in the list shortly.",
+            ) from None
+        except Exception:
+            logger.exception("Adding the voice %r failed", name)
+            raise HTTPException(status_code=500, detail="Could not add that voice.") from None
+        return {"id": voice.id, "name": voice.name}
+
+    @app.delete("/voices/{voice_id}", status_code=204)
+    def delete_voice(voice_id: str) -> Response:
+        if not store.delete(voice_id):
+            raise HTTPException(status_code=404, detail="That voice does not exist.")
+        app.state.service.forget_cached_voices()
+        return Response(status_code=204)
+
+    def resolve_voice(voice: str) -> str | Path:
+        if voice in _ORIGINS_OF_PREDEFINED_VOICES:
+            return voice
+        path = store.state_path(voice)
+        if path is None:
             raise HTTPException(status_code=400, detail=f"Unknown voice: {voice}")
-        return voice
+        return path
 
     def start_reading(make_article: Callable[[], Article], voice: str) -> dict[str, object]:
         """Shared by every way of starting a reading: check the voice, extract, chunk, queue."""

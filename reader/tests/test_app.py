@@ -324,3 +324,150 @@ def test_forgetting_cached_voices_is_harmless_without_a_cache(tmp_path: Path):
         service.forget_cached_voices()
     finally:
         service.shutdown()
+
+
+def add_voice(
+    client: TestClient, name: str = "Grandma", filename: str = "clip.wav", data: bytes = b"audio"
+) -> httpx.Response:
+    return client.post("/voices", files={"file": (filename, data)}, data={"name": name})
+
+
+def test_the_voice_list_starts_with_no_custom_voices(client: TestClient):
+    body = client.get("/voices").json()
+    assert body["custom"] == []
+    assert "alba" in body["voices"]
+    assert body["default"] == "alba"
+
+
+def test_an_uploaded_clip_becomes_a_listed_voice(client: TestClient, model: FakeModel):
+    response = add_voice(client)
+    assert response.status_code == 200
+    created = response.json()
+    assert created["name"] == "Grandma"
+    assert client.get("/voices").json()["custom"] == [created]
+    assert model.prompts == [("clip.wav", True)]
+
+
+def test_an_uploaded_voice_state_is_validated_and_listed(
+    client: TestClient, model: FakeModel, tmp_path: Path
+):
+    from pocket_tts.models.model_state import export_model_state
+
+    source = tmp_path / "mine.safetensors"
+    export_model_state({"fake": {"voice": torch.ones(2)}}, source)
+    response = add_voice(client, "From my Mac", "mine.safetensors", source.read_bytes())
+    assert response.status_code == 200
+    assert model.prompts == [("mine.safetensors", False)]
+
+
+def test_a_damaged_voice_state_is_a_400(client: TestClient):
+    response = add_voice(client, "Bad", "bad.safetensors", b"nope")
+    assert response.status_code == 400
+    assert "not a voice this reader can use" in response.json()["detail"]
+    assert client.get("/voices").json()["custom"] == []
+
+
+def test_the_extension_check_ignores_case(client: TestClient, model: FakeModel):
+    assert add_voice(client, filename="CLIP.WAV").status_code == 200
+    assert model.prompts == [("clip.wav", True)]
+
+
+@pytest.mark.parametrize("filename", ["clip.m4a", "clip", "notes.txt", ""])
+def test_other_file_types_are_refused(client: TestClient, filename: str):
+    response = add_voice(client, filename=filename)
+    assert response.status_code == 400
+    assert ".wav, .mp3, .flac, .ogg or .safetensors" in response.json()["detail"]
+
+
+def test_an_empty_voice_state_is_a_400_not_a_500(client: TestClient):
+    # Empty audio is covered in test_voices (the fake model does not decode, the real one fails
+    # and encode_voice maps that to a 400); an empty voice state fails to load even with the fake.
+    response = add_voice(client, "Empty", "empty.safetensors", b"")
+    assert response.status_code == 400
+    assert client.get("/voices").json()["custom"] == []
+
+
+def test_a_blank_name_is_a_400_and_no_work_is_queued(client: TestClient, model: FakeModel):
+    response = add_voice(client, name="   ")
+    assert response.status_code == 400
+    assert "name" in response.json()["detail"]
+    assert model.prompts == []
+
+
+def test_a_voice_upload_over_the_size_cap_is_refused(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(reader_app, "MAX_VOICE_UPLOAD_BYTES", 4)
+    response = add_voice(client, data=b"12345")
+    assert response.status_code == 400
+    assert "larger than" in response.json()["detail"]
+
+
+def test_the_voice_cap_is_a_400(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    from reader import voices as voices_module
+
+    monkeypatch.setattr(voices_module, "MAX_VOICES", 1)
+    assert add_voice(client, "one").status_code == 200
+    response = add_voice(client, "two")
+    assert response.status_code == 400
+    assert "Delete one" in response.json()["detail"]
+
+
+def test_a_custom_voice_is_used_for_a_reading(client: TestClient, model: FakeModel, tmp_path: Path):
+    voice_id = add_voice(client).json()["id"]
+    body = prepare(client, voice=voice_id).json()
+    client.get(f"/chunk/{body['job']}/0.wav")
+    assert model.voices[0] == tmp_path / "voices" / f"{voice_id}.safetensors"
+
+
+def test_a_custom_voice_is_used_for_a_document(
+    client: TestClient, model: FakeModel, tmp_path: Path
+):
+    voice_id = add_voice(client).json()["id"]
+    body = upload(client, "n.txt", LONG_TEXT.encode(), voice=voice_id).json()
+    client.get(f"/chunk/{body['job']}/0.wav")
+    assert model.voices[0] == tmp_path / "voices" / f"{voice_id}.safetensors"
+
+
+def test_an_unknown_custom_id_is_rejected(client: TestClient):
+    response = prepare(client, voice="doesNotExist")
+    assert response.status_code == 400
+    assert "Unknown voice" in response.json()["detail"]
+
+
+def test_deleting_a_voice_removes_it_and_it_can_no_longer_be_used(
+    client: TestClient, tmp_path: Path
+):
+    voice_id = add_voice(client).json()["id"]
+    assert client.delete(f"/voices/{voice_id}").status_code == 204
+    assert client.get("/voices").json()["custom"] == []
+    assert list((tmp_path / "voices").iterdir()) == []
+    assert prepare(client, voice=voice_id).status_code == 400
+
+
+def test_deleting_clears_the_models_voice_cache(client: TestClient, model: FakeModel):
+    model._cached_get_state_for_audio_prompt = Mock()
+    voice_id = add_voice(client).json()["id"]
+    client.delete(f"/voices/{voice_id}")
+    model._cached_get_state_for_audio_prompt.cache_clear.assert_called_once_with()
+
+
+def test_deleting_an_unknown_or_malformed_id_is_a_404(client: TestClient):
+    assert client.delete("/voices/nothing").status_code == 404
+    assert client.delete("/voices/bad.id").status_code == 404
+
+
+def test_a_reused_name_after_delete_is_a_different_voice(client: TestClient):
+    first = add_voice(client, "Same").json()
+    client.delete(f"/voices/{first['id']}")
+    second = add_voice(client, "Same").json()
+    assert second["id"] != first["id"]
+
+
+def test_a_voice_added_while_a_reading_generates_waits_its_turn(
+    client: TestClient, model: FakeModel
+):
+    # Smoke check that both kinds of work share the one worker without deadlocking.
+    body = prepare(client).json()
+    client.get(f"/chunk/{body['job']}/0.wav")
+    assert add_voice(client).status_code == 200
