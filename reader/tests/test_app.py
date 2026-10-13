@@ -5,6 +5,8 @@ import wave
 from collections.abc import Callable
 from pathlib import Path
 
+from unittest.mock import Mock
+
 import httpx
 import pytest
 import torch
@@ -269,3 +271,56 @@ def test_a_file_exactly_at_the_cap_is_accepted(
 
 def test_a_request_without_a_file_is_a_422(client: TestClient):
     assert client.post("/prepare-file", data={"voice": "alba"}).status_code == 422
+
+
+def test_work_for_the_model_runs_on_the_same_single_thread_as_generation(tmp_path: Path):
+    service = ReaderService(FakeModel(), tmp_path)
+    try:
+        names = {service.run_on_worker(lambda: threading.current_thread().name).result(5)}
+        names.add(service.run_on_worker(lambda: threading.current_thread().name).result(5))
+        assert len(names) == 1
+        assert threading.current_thread().name not in names
+    finally:
+        service.shutdown()
+
+
+def test_work_for_the_model_queues_behind_a_generation_in_progress(tmp_path: Path):
+    release = threading.Event()
+
+    class BlockingModel(FakeModel):
+        def generate_audio(self, model_state, text_to_generate):
+            release.wait(5)
+            return super().generate_audio(model_state, text_to_generate)
+
+    service = ReaderService(BlockingModel(), tmp_path)
+    try:
+        job_id = service.add_job("t", "alba", ["Part one."])
+        service.chunk_future(job_id, 0)
+        wait_until(lambda: service.jobs[job_id].futures[0].running())
+        queued = service.run_on_worker(lambda: "done")
+        time.sleep(0.1)
+        assert not queued.done()
+        release.set()
+        assert queued.result(5) == "done"
+    finally:
+        release.set()
+        service.shutdown()
+
+
+def test_forgetting_cached_voices_clears_the_models_cache(tmp_path: Path):
+    model = FakeModel()
+    model._cached_get_state_for_audio_prompt = Mock()
+    service = ReaderService(model, tmp_path)
+    try:
+        service.forget_cached_voices()
+        model._cached_get_state_for_audio_prompt.cache_clear.assert_called_once_with()
+    finally:
+        service.shutdown()
+
+
+def test_forgetting_cached_voices_is_harmless_without_a_cache(tmp_path: Path):
+    service = ReaderService(FakeModel(), tmp_path)
+    try:
+        service.forget_cached_voices()
+    finally:
+        service.shutdown()

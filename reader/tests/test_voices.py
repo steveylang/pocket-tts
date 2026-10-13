@@ -2,9 +2,12 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+import torch
 
+from pocket_tts.models.model_state import _import_model_state, export_model_state
 from reader import voices as voices_module
-from reader.voices import VoiceError, VoiceStore
+from reader.tests.conftest import FakeModel
+from reader.voices import VoiceError, VoiceStore, encode_voice
 
 
 def write_bytes(content: bytes) -> Callable[[Path], None]:
@@ -124,3 +127,63 @@ def test_a_corrupt_name_file_is_skipped_not_fatal(store: VoiceStore, tmp_path: P
     bad = store.add("Bad", write_bytes(b"x"))
     (tmp_path / "voices" / f"{bad.id}.json").write_text("{not json")
     assert [v.id for v in store.list_voices()] == [good.id]
+
+
+class BrokenAudioModel(FakeModel):
+    def get_state_for_audio_prompt(self, audio_conditioning: Path, truncate: bool = False):
+        raise RuntimeError("cannot decode")
+
+
+class NoCloningModel(FakeModel):
+    has_voice_cloning = False
+
+
+def a_voice_state_file(path: Path) -> Path:
+    export_model_state({"fake": {"voice": torch.ones(3)}}, path)
+    return path
+
+
+def test_an_audio_clip_becomes_a_voice_state_made_from_its_first_30_seconds(tmp_path: Path):
+    model = FakeModel()
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(b"audio")
+    dest = tmp_path / "out.part"
+    encode_voice(model, clip, dest)
+    assert model.prompts == [("clip.wav", True)]
+    assert "fake" in _import_model_state(dest, torch.device("cpu"))
+
+
+def test_a_voice_state_is_validated_by_loading_then_copied_unchanged(tmp_path: Path):
+    model = FakeModel()
+    source = a_voice_state_file(tmp_path / "mine.safetensors")
+    dest = tmp_path / "out.part"
+    encode_voice(model, source, dest)
+    assert model.prompts == [("mine.safetensors", False)]
+    assert dest.read_bytes() == source.read_bytes()
+
+
+@pytest.mark.parametrize("content", [b"", b"this is not a voice"])
+def test_a_damaged_voice_state_is_refused_with_the_reason(tmp_path: Path, content: bytes):
+    source = tmp_path / "bad.safetensors"
+    source.write_bytes(content)
+    with pytest.raises(VoiceError, match="not a voice this reader can use"):
+        encode_voice(FakeModel(), source, tmp_path / "out.part")
+    assert not (tmp_path / "out.part").exists()
+
+
+def test_audio_that_cannot_be_decoded_is_a_plain_error(tmp_path: Path):
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(b"")
+    with pytest.raises(VoiceError, match="Could not read that audio"):
+        encode_voice(BrokenAudioModel(), clip, tmp_path / "out.part")
+
+
+def test_a_model_without_voice_cloning_still_accepts_voice_states(tmp_path: Path):
+    model = NoCloningModel()
+    clip = tmp_path / "clip.wav"
+    clip.write_bytes(b"audio")
+    with pytest.raises(VoiceError, match="cannot make a voice from audio"):
+        encode_voice(model, clip, tmp_path / "out.part")
+    source = a_voice_state_file(tmp_path / "mine.safetensors")
+    encode_voice(model, source, tmp_path / "out2.part")
+    assert (tmp_path / "out2.part").exists()

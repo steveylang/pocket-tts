@@ -3,9 +3,13 @@
 import json
 import re
 import secrets
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
+
+from pocket_tts.models.model_state import export_model_state
 
 MAX_VOICES = 20
 MAX_NAME_CHARS = 40
@@ -89,3 +93,46 @@ class VoiceStore:
 
     def _meta(self, voice_id: str) -> Path:
         return self.directory / f"{voice_id}.json"
+
+
+STATE_SUFFIX = ".safetensors"
+AUDIO_SUFFIXES = frozenset({".wav", ".mp3", ".flac", ".ogg"})
+UPLOAD_SUFFIXES = AUDIO_SUFFIXES | {STATE_SUFFIX}
+
+
+class VoiceEncoder(Protocol):
+    """The part of TTSModel that turns an upload into a voice state."""
+
+    has_voice_cloning: bool
+
+    def get_state_for_audio_prompt(
+        self, audio_conditioning: Path, truncate: bool = False
+    ) -> object: ...
+
+
+def encode_voice(model: VoiceEncoder, upload: Path, dest: Path) -> None:
+    """Write a voice state file at `dest` from an uploaded clip or exported voice state.
+
+    Must run on the model worker thread. `upload` keeps its (lower-case) extension, which the
+    model uses to tell a voice state from audio.
+    """
+    if upload.suffix == STATE_SUFFIX:
+        try:
+            # Loading is the validation. A state from a different model can still load; that
+            # shows up as an error when the voice is first used.
+            model.get_state_for_audio_prompt(upload)
+        except Exception as error:
+            raise VoiceError(
+                "That file is not a voice this reader can use "
+                "(it must be exported from the same model)."
+            ) from error
+        shutil.copyfile(upload, dest)
+        return
+    if not model.has_voice_cloning:
+        raise VoiceError("This model cannot make a voice from audio. Upload a .safetensors voice.")
+    try:
+        # Only the first 30 seconds are used, as `pocket-tts export-voice` does.
+        state = model.get_state_for_audio_prompt(upload, truncate=True)
+        export_model_state(state, dest)  # ty: ignore[invalid-argument-type]
+    except Exception as error:
+        raise VoiceError("Could not read that audio file.") from error

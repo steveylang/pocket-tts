@@ -13,7 +13,7 @@ from concurrent.futures import TimeoutError as FutureTimeout
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeVar
 
 import numpy as np
 import torch
@@ -43,14 +43,22 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
 
 class SpeechModel(Protocol):
     """The part of TTSModel the reader uses (tests substitute a fake)."""
 
+    has_voice_cloning: bool
+
     @property
     def sample_rate(self) -> int: ...
 
-    def _cached_get_state_for_audio_prompt(self, voice: str) -> object: ...
+    def _cached_get_state_for_audio_prompt(self, voice: str | Path) -> object: ...
+
+    def get_state_for_audio_prompt(
+        self, audio_conditioning: Path, truncate: bool = False
+    ) -> object: ...
 
     def generate_audio(self, model_state: object, text_to_generate: str) -> torch.Tensor: ...
 
@@ -71,7 +79,7 @@ def write_wav(path: Path, audio: torch.Tensor, sample_rate: int) -> None:
 @dataclass
 class Job:
     title: str
-    voice: str
+    voice: str | Path
     chunks: list[str]
     created: float = field(default_factory=time.monotonic)
     futures: dict[int, "Future[Path]"] = field(default_factory=dict)
@@ -88,7 +96,7 @@ class ReaderService:
         # One worker: the model is not thread-safe, so generations queue up behind each other.
         self._executor = ThreadPoolExecutor(max_workers=1)
 
-    def add_job(self, title: str, voice: str, chunks: list[str]) -> str:
+    def add_job(self, title: str, voice: str | Path, chunks: list[str]) -> str:
         job_id = secrets.token_urlsafe(8)
         with self._lock:
             self._drop_expired()
@@ -119,6 +127,16 @@ class ReaderService:
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def run_on_worker(self, work: Callable[[], T]) -> "Future[T]":
+        """Run model work on the single worker, queued behind any generation in progress."""
+        return self._executor.submit(work)
+
+    def forget_cached_voices(self) -> None:
+        """Release the voice states the model caches, so a deleted voice is not kept in memory."""
+        clear = getattr(self.model._cached_get_state_for_audio_prompt, "cache_clear", None)
+        if clear is not None:
+            clear()
 
     def _submit(self, job_id: str, job: Job, n: int) -> "Future[Path]":
         future = job.futures.get(n)
