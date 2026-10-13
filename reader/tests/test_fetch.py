@@ -1,9 +1,11 @@
 import ipaddress
 import socket
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
 import requests
+from typing_extensions import Self
 
 from reader.extract import ExtractionError, UnsafeURL, check_url, fetch_page
 
@@ -39,21 +41,21 @@ class FakeResponse:
         self.headers = {"Content-Type": "text/html; charset=utf-8", **(headers or {})}
         self.body = body
 
-    def __enter__(self) -> "FakeResponse":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *args: object) -> None:
         pass
 
-    def iter_content(self, chunk_size: int) -> Any:
+    def iter_content(self, chunk_size: int) -> Iterator[bytes]:
         for start in range(0, len(self.body), chunk_size):
             yield self.body[start : start + chunk_size]
 
 
-def getter(*responses: FakeResponse) -> Any:
+def getter(*responses: FakeResponse) -> Callable[..., FakeResponse]:
     queue = list(responses)
 
-    def http_get(url: str, **kwargs: Any) -> FakeResponse:
+    def http_get(url: str, **kwargs: object) -> FakeResponse:
         assert kwargs["allow_redirects"] is False
         assert kwargs["stream"] is True
         return queue.pop(0)
@@ -143,7 +145,7 @@ def test_http_errors_are_reported():
 
 
 def test_network_failures_are_reported():
-    def failing(url: str, **kwargs: Any) -> FakeResponse:
+    def failing(url: str, **kwargs: object) -> FakeResponse:
         raise requests.ConnectionError("down")
 
     with pytest.raises(ExtractionError, match="download"):
