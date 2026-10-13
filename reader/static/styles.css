@@ -64,3 +64,7 @@ audio { width: 100%; }
 input[type="text"], input[type="file"] { font: inherit; color: inherit; max-width: 100%; }
 input[type="text"] { padding: 8px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; }
 label.file { margin: 12px 0 0; flex-wrap: wrap; }
+#voice-tools { margin: 12px 0; }
+#voice-tools summary { cursor: pointer; padding: 8px 0; color: var(--muted); }
+#voice-tools label { margin: 8px 0; flex-wrap: wrap; }
+.hint { color: var(--muted); font-size: 0.9rem; margin: 4px 0; }

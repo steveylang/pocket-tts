@@ -24,7 +24,7 @@ function setStatus(text) {
 
 // FastAPI sends `detail` as a list for malformed requests; only a string is fit to show.
 function errorText(body, response) {
-  if (typeof body.detail === "string") return body.detail;
+  if (body && typeof body.detail === "string") return body.detail;
   return response.statusText || "Something went wrong.";
 }
 
@@ -133,16 +133,83 @@ async function start() {
   }
 }
 
-async function loadVoices() {
+function updateVoiceButtons() {
+  const option = $("voice").selectedOptions[0];
+  $("voice-delete").disabled = !(option && option.dataset.custom);
+}
+
+// `selectId` picks a voice after adding one; otherwise the last-used voice is restored.
+async function loadVoices(selectId) {
   const response = await fetch("/voices");
-  const { voices, default: fallback } = await response.json();
-  for (const name of voices) {
-    const option = document.createElement("option");
-    option.value = option.textContent = name;
-    $("voice").append(option);
+  const { voices, custom, default: fallback } = await response.json();
+  const select = $("voice");
+  select.replaceChildren();
+  for (const name of voices) select.append(new Option(name, name));
+  if (custom.length) {
+    const group = document.createElement("optgroup");
+    group.label = "Uploaded";
+    for (const { id, name } of custom) {
+      const option = new Option(name, id);
+      option.dataset.custom = "1";
+      group.append(option);
+    }
+    select.append(group);
   }
-  const saved = safeGet("voice");
-  $("voice").value = voices.includes(saved) ? saved : fallback;
+  // A saved voice that was deleted is simply not in the list any more, so fall back.
+  const wanted = selectId || safeGet("voice");
+  select.value = [...select.options].some((o) => o.value === wanted) ? wanted : fallback;
+  updateVoiceButtons();
+}
+
+async function addVoice() {
+  const file = $("voice-file").files[0];
+  const name = $("voice-name").value.trim();
+  if (!file || !name) {
+    setStatus("Choose a voice file and give it a name.");
+    return;
+  }
+  const form = new FormData();
+  form.append("file", file);
+  form.append("name", name);
+  $("voice-add").disabled = true;
+  setStatus("Preparing voice…");
+  try {
+    const response = await fetch("/voices", { method: "POST", body: form });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setStatus(errorText(body, response));
+      return;
+    }
+    safeSet("voice", body.id);
+    await loadVoices(body.id);
+    $("voice-file").value = "";
+    $("voice-name").value = "";
+    setStatus(`Added ${body.name}.`);
+  } catch {
+    setStatus("Could not reach the server.");
+  } finally {
+    $("voice-add").disabled = false;
+  }
+}
+
+async function deleteVoice() {
+  const option = $("voice").selectedOptions[0];
+  if (!option || !option.dataset.custom) return;
+  if (!confirm(`Delete the voice "${option.textContent}"?`)) return;
+  try {
+    const response = await fetch(`/voices/${encodeURIComponent(option.value)}`, {
+      method: "DELETE",
+    });
+    // 404 means it was already gone; the refreshed list is the truth either way.
+    if (!response.ok && response.status !== 404) {
+      setStatus("Could not delete that voice.");
+      return;
+    }
+    await loadVoices();
+    setStatus("Voice deleted.");
+  } catch {
+    setStatus("Could not reach the server.");
+  }
 }
 
 $("play").addEventListener("click", start);
@@ -153,7 +220,12 @@ $("file").addEventListener("change", () => {
 $("input").addEventListener("input", () => { $("file").value = ""; });
 $("prev").addEventListener("click", () => playChunk(index - 1));
 $("next").addEventListener("click", () => playChunk(index + 1));
-$("voice").addEventListener("change", () => safeSet("voice", $("voice").value));
+$("voice").addEventListener("change", () => {
+  safeSet("voice", $("voice").value);
+  updateVoiceButtons();
+});
+$("voice-add").addEventListener("click", addVoice);
+$("voice-delete").addEventListener("click", deleteVoice);
 $("speed").addEventListener("input", applySpeed);
 audio.addEventListener("ended", () => {
   if (preparing || !job) return;
